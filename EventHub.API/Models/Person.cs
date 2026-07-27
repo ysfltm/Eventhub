@@ -10,6 +10,12 @@ public class Person
     public string? Address { get; set; }
     public string? CompanyName { get; set; }
     public string? Position { get; set; }
+    
+    public string? PasswordHash { get; set; } // Nullable until account activated
+    
+    public string Role { get; set; } = "Attendee"; // SuperAdmin | EventOrganiser | Attendee
+    
+    public bool IsAccountActivated { get; set; } = false;
 
     public ICollection<Participation> Participations { get; set; } = new List<Participation>();
 }

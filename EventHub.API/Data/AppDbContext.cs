@@ -38,8 +38,11 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<Person>(entity =>
         {
+            entity.HasIndex(p => p.Email).IsUnique();
             entity.HasKey(p => p.IdPerson);
+            entity.Property(p => p.Role).HasDefaultValue("Attendee");
             entity.Property(p => p.Email).IsRequired().HasMaxLength(150);
+            entity.Property(p => p.IsAccountActivated).HasDefaultValue(false);
         });
 
         modelBuilder.Entity<Participation>(entity =>
