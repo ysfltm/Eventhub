@@ -1,4 +1,6 @@
-﻿namespace EventHub.API.DTOs;
+﻿using EventHub.API.Models;
+
+namespace EventHub.API.DTOs;
 
 public record CreatePersonDto(
     string FirstName,
@@ -7,7 +9,8 @@ public record CreatePersonDto(
     string Phone,
     string? Address,
     string? CompanyName,
-    string? Position
+    string? Position ,
+    PersonRole Role = PersonRole.Attendee
 );
 
 public record PersonResponseDto(
@@ -18,5 +21,5 @@ public record PersonResponseDto(
     string Phone,
     string? Address,
     string? CompanyName,
-    string? Position
+    string? Position 
 );

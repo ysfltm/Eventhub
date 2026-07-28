@@ -37,7 +37,7 @@ public class AuthService : IAuthService
             Address = dto.Address,
             CompanyName = dto.CompanyName,
             Position = dto.Position,
-            Role = string.IsNullOrWhiteSpace(dto.Role) ? "Attendee" : dto.Role,
+            Role = dto.Role, // 👈 Now assigns PersonRole Enum directly
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
             IsAccountActivated = true
         };
@@ -51,7 +51,7 @@ public class AuthService : IAuthService
             token,
             person.IdPerson,
             person.Email,
-            person.Role,
+            person.Role.ToString(), // 👈 Converted to string for DTO payload
             person.FirstName,
             person.LastName
         );
@@ -82,7 +82,7 @@ public class AuthService : IAuthService
             token,
             person.IdPerson,
             person.Email,
-            person.Role,
+            person.Role.ToString(), // 👈 Converted to string for DTO payload
             person.FirstName,
             person.LastName
         );
@@ -98,7 +98,7 @@ public class AuthService : IAuthService
         {
             new Claim(ClaimTypes.NameIdentifier, person.IdPerson.ToString()),
             new Claim(ClaimTypes.Email, person.Email),
-            new Claim(ClaimTypes.Role, person.Role),
+            new Claim(ClaimTypes.Role, person.Role.ToString()), // 👈 Formats Enum to String (e.g., "Attendee")
             new Claim("FirstName", person.FirstName),
             new Claim("LastName", person.LastName)
         };

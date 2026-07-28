@@ -3,6 +3,7 @@ using EventHub.API.DTOs;
 using EventHub.API.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EventHub.API.Controllers;
 
@@ -45,6 +46,7 @@ public class ParticipationController : ControllerBase
 
     // POST: api/Participation
     [HttpPost]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<ActionResult<ParticipationResponseDto>> AssignParticipant(CreateParticipationDto dto)
     {
         var evt = await _context.Events.FindAsync(dto.IdEvent);
@@ -92,7 +94,8 @@ public class ParticipationController : ControllerBase
     }
     // PUT: api/Participation/5
     [HttpPut("{id}")]
-    public async Task<IActionResult> UpdateParticipation(int id, CreateParticipationDto dto)
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> UpdateParticipation(int id, [FromBody] CreateParticipationDto dto)
     {
         var pt = await _context.Participations.FindAsync(id);
         if (pt == null) return NotFound("Participation record not found.");
@@ -115,6 +118,7 @@ public class ParticipationController : ControllerBase
 
 // DELETE: api/Participation/5
     [HttpDelete("{id}")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteParticipation(int id)
     {
         var pt = await _context.Participations.FindAsync(id);
@@ -124,5 +128,80 @@ public class ParticipationController : ControllerBase
         await _context.SaveChangesAsync();
 
         return Ok(new { message = $"Participation record {id} deleted successfully." });
+    }
+    // POST: api/Participation/check-in
+    [HttpPost("check-in")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<ActionResult<CheckInResponseDto>> CheckInParticipant([FromBody] CheckInRequestDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.QrPayload))
+        {
+            return BadRequest(new CheckInResponseDto(
+                Success: false,
+                Message: "QR payload is required.",
+                ParticipationId: null,
+                AttendeeName: null,
+                CheckInTime: null
+            ));
+        }
+
+        // 1. Locate the Invitation by QR Code payload
+        var invitation = await _context.Invitations
+            .Include(i => i.Participation)
+                .ThenInclude(p => p.Person)
+            .Include(i => i.Participation)
+                .ThenInclude(p => p.Event)
+            .FirstOrDefaultAsync(i => i.QRCode == dto.QrPayload);
+
+        if (invitation == null)
+        {
+            return NotFound(new CheckInResponseDto(
+                Success: false,
+                Message: "Invalid QR pass code.",
+                ParticipationId: null,
+                AttendeeName: null,
+                CheckInTime: null
+            ));
+        }
+
+        var pt = invitation.Participation;
+
+        // 2. Ensure pass matches the intended event
+        if (pt.IdEvent != dto.EventId)
+        {
+            return BadRequest(new CheckInResponseDto(
+                Success: false,
+                Message: $"Pass is for event '{pt.Event.Title}', not event ID {dto.EventId}.",
+                ParticipationId: pt.IdParticipation,
+                AttendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+                CheckInTime: null
+            ));
+        }
+
+        // 3. Check for duplicate scan / already checked in
+        if (pt.CheckInTime != null)
+        {
+            return Conflict(new CheckInResponseDto(
+                Success: false,
+                Message: $"Already checked in at {pt.CheckInTime:yyyy-MM-dd HH:mm:ss UTC}.",
+                ParticipationId: pt.IdParticipation,
+                AttendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+                CheckInTime: pt.CheckInTime
+            ));
+        }
+
+        // 4. Record check-in timestamp and update status
+        pt.CheckInTime = DateTime.UtcNow;
+        pt.Status = "CheckedIn";
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new CheckInResponseDto(
+            Success: true,
+            Message: "Check-in successful! Access Granted.",
+            ParticipationId: pt.IdParticipation,
+            AttendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+            CheckInTime: pt.CheckInTime
+        ));
     }
 }

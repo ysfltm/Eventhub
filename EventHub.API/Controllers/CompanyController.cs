@@ -3,7 +3,7 @@ using EventHub.API.DTOs;
 using EventHub.API.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-
+using Microsoft.AspNetCore.Authorization;
 namespace EventHub.API.Controllers;
 
 [ApiController]
@@ -42,6 +42,7 @@ public class CompanyController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize(Roles = "SuperAdmin")]
     public async Task<ActionResult<CompanyResponseDto>> CreateCompany(CreateCompanyDto dto)
     {
         var company = new Company
@@ -67,6 +68,7 @@ public class CompanyController : ControllerBase
     }
     // PUT: api/Company/5
     [HttpPut("{id}")]
+    [Authorize(Roles = "SuperAdmin")]
     public async Task<IActionResult> UpdateCompany(int id, CreateCompanyDto dto)
     {
         var company = await _context.Companies.FindAsync(id);
@@ -86,6 +88,7 @@ public class CompanyController : ControllerBase
 
 // DELETE: api/Company/5
     [HttpDelete("{id}")]
+    [Authorize(Roles = "SuperAdmin")]
     public async Task<IActionResult> DeleteCompany(int id)
     {
         var company = await _context.Companies.FindAsync(id);

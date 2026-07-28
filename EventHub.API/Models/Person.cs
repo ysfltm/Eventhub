@@ -13,7 +13,7 @@ public class Person
     
     public string? PasswordHash { get; set; } // Nullable until account activated
     
-    public string Role { get; set; } = "Attendee"; // SuperAdmin | EventOrganiser | Attendee
+    public PersonRole Role { get; set; } = PersonRole.Attendee; // SuperAdmin | EventOrganiser | Attendee
     
     public bool IsAccountActivated { get; set; } = false;
 

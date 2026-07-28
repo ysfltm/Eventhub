@@ -10,6 +10,7 @@ public class Company
     public string? Website { get; set; }
     public string Email { get; set; } = string.Empty;
     public string Phone { get; set; } = string.Empty;
+    
 
     public ICollection<Event> Events { get; set; } = new List<Event>();
 }

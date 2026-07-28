@@ -13,7 +13,7 @@ public class AppDbContext : DbContext
     public DbSet<Participation> Participations => Set<Participation>();
     public DbSet<Invitation> Invitations => Set<Invitation>();
     public DbSet<Feedback> Feedbacks => Set<Feedback>();
-
+    
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -40,7 +40,15 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(p => p.Email).IsUnique();
             entity.HasKey(p => p.IdPerson);
-            entity.Property(p => p.Role).HasDefaultValue("Attendee");
+            
+            // 1. Map PersonRole Enum to/from string in SQL
+            entity.Property(p => p.Role)
+                  .HasConversion<string>();
+
+            // 2. Set default value using the Enum instead of string
+            entity.Property(p => p.Role)
+                  .HasDefaultValue(PersonRole.Attendee);
+
             entity.Property(p => p.Email).IsRequired().HasMaxLength(150);
             entity.Property(p => p.IsAccountActivated).HasDefaultValue(false);
         });

@@ -3,7 +3,7 @@ using EventHub.API.DTOs;
 using EventHub.API.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-
+using Microsoft.AspNetCore.Authorization;
 namespace EventHub.API.Controllers;
 
 [ApiController]

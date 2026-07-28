@@ -3,6 +3,7 @@ using EventHub.API.Models;
 using EventHub.API.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Authorization;
 
 namespace EventHub.API.Controllers;
 
@@ -19,7 +20,9 @@ public class InvitationController : ControllerBase
         _pdfService = pdfService;
     }
 
+    // POST: api/Invitation/generate/5
     [HttpPost("generate/{participationId}")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> GeneratePass(int participationId)
     {
         var pt = await _context.Participations
@@ -49,12 +52,14 @@ public class InvitationController : ControllerBase
             });
         }
 
+        string companyName = pt.Event.Company.Name;
+
         // Generate unique QR payload and PDF pass
         string qrPayload = $"EVENTHUB-EVT{pt.IdEvent}-PRSN{pt.IdPerson}-{Guid.NewGuid():N}";
         string pdfPath = _pdfService.GenerateInvitationPdf(
             pt.IdParticipation,
             pt.Event.Title,
-            pt.Event.Company.Name,
+            companyName,
             pt.Event.Date,
             pt.Event.StartTime,
             pt.Event.Address,
@@ -81,6 +86,7 @@ public class InvitationController : ControllerBase
         return Ok(new
         {
             message = "Pass generated successfully!",
+            idInvitation = invitation.IdInvitation,
             qrCode = invitation.QRCode,
             pdfPath = invitation.PDFPath,
             programPath = invitation.ProgramPath,
@@ -88,6 +94,83 @@ public class InvitationController : ControllerBase
             sentEmail = invitation.SentEmail,
             sentWhatsApp = invitation.SentWhatsApp,
             createdAt = invitation.CreatedAt
+        });
+    }
+
+    // GET: api/Invitation/participation/5
+    [HttpGet("participation/{participationId}")]
+    [Authorize] // Accessible to any logged-in user (Attendees, Organisers, Admins)
+    public async Task<IActionResult> GetByParticipationId(int participationId)
+    {
+        var inv = await _context.Invitations
+            .Include(i => i.Participation)
+                .ThenInclude(p => p.Event)
+            .Include(i => i.Participation)
+                .ThenInclude(p => p.Person)
+            .FirstOrDefaultAsync(i => i.IdParticipation == participationId);
+
+        if (inv == null)
+            return NotFound("No invitation pass found for this participation record.");
+
+        return Ok(new
+        {
+            idInvitation = inv.IdInvitation,
+            idParticipation = inv.IdParticipation,
+            eventTitle = inv.Participation.Event.Title,
+            attendeeName = $"{inv.Participation.Person.FirstName} {inv.Participation.Person.LastName}",
+            qrCode = inv.QRCode,
+            pdfPath = inv.PDFPath,
+            programPath = inv.ProgramPath,
+            template = inv.Template,
+            sentEmail = inv.SentEmail,
+            emailSentDate = inv.EmailSentDate,
+            sentWhatsApp = inv.SentWhatsApp,
+            whatsAppSentDate = inv.WhatsAppSentDate,
+            createdAt = inv.CreatedAt
+        });
+    }
+
+    // PUT: api/Invitation/5/email-status
+    [HttpPut("{invitationId}/email-status")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> UpdateEmailStatus(int invitationId, [FromQuery] bool sent)
+    {
+        var inv = await _context.Invitations.FindAsync(invitationId);
+        if (inv == null) return NotFound("Invitation record not found.");
+
+        inv.SentEmail = sent;
+        inv.EmailSentDate = sent ? DateTime.UtcNow : null;
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = "Email dispatch status updated successfully.",
+            idInvitation = inv.IdInvitation,
+            sentEmail = inv.SentEmail,
+            emailSentDate = inv.EmailSentDate
+        });
+    }
+
+    // PUT: api/Invitation/5/whatsapp-status
+    [HttpPut("{invitationId}/whatsapp-status")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> UpdateWhatsAppStatus(int invitationId, [FromQuery] bool sent)
+    {
+        var inv = await _context.Invitations.FindAsync(invitationId);
+        if (inv == null) return NotFound("Invitation record not found.");
+
+        inv.SentWhatsApp = sent;
+        inv.WhatsAppSentDate = sent ? DateTime.UtcNow : null;
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new
+        {
+            message = "WhatsApp dispatch status updated successfully.",
+            idInvitation = inv.IdInvitation,
+            sentWhatsApp = inv.SentWhatsApp,
+            whatsAppSentDate = inv.WhatsAppSentDate
         });
     }
 }

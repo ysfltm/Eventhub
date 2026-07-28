@@ -1,11 +1,14 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using EventHub.API.Data;
 using EventHub.API.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Any;
 using Microsoft.OpenApi.Models;
 using QuestPDF.Infrastructure;
+using Swashbuckle.AspNetCore.SwaggerGen;
 
 // 1. Configure QuestPDF License (Must be set before building the app)
 QuestPDF.Settings.License = LicenseType.Community;
@@ -50,8 +53,14 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-// 5. Add Controller support & CORS
-builder.Services.AddControllers();
+// 5. Configure Controllers & JSON Enum Serializer (Single combined registration)
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(
+            new JsonStringEnumConverter()
+        );
+    });
 
 builder.Services.AddCors(options =>
 {
@@ -63,11 +72,15 @@ builder.Services.AddCors(options =>
     });
 });
 
-// 6. Add API Explorer & Swagger with JWT Bearer Support
+// 6. Configure Swagger Generator (Combined into a single AddSwaggerGen call)
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "EventHub API", Version = "v1" });
+
+    // Enforce String Enums & Dropdowns in Swagger UI
+    options.UseInlineDefinitionsForEnums();
+    options.SchemaFilter<EnumSchemaFilter>();
 
     // Define Bearer Security Scheme for Swagger UI
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -119,3 +132,21 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+// 7. Schema Filter to force string dropdowns for Enums in Swagger UI
+public class EnumSchemaFilter : ISchemaFilter
+{
+    public void Apply(OpenApiSchema schema, SchemaFilterContext context)
+    {
+        if (context.Type.IsEnum)
+        {
+            schema.Enum.Clear();
+            foreach (var enumName in Enum.GetNames(context.Type))
+            {
+                schema.Enum.Add(new OpenApiString(enumName));
+            }
+            schema.Type = "string";
+            schema.Format = null;
+        }
+    }
+}
