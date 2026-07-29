@@ -1,9 +1,10 @@
 ﻿using EventHub.API.Data;
 using EventHub.API.DTOs;
 using EventHub.API.Models;
+using EventHub.API.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Authorization;
 
 namespace EventHub.API.Controllers;
 
@@ -12,10 +13,20 @@ namespace EventHub.API.Controllers;
 public class ParticipationController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IEmailService _emailService;
+    private readonly IInvitationPdfService _pdfService;
+    private readonly IWebHostEnvironment _env;
 
-    public ParticipationController(AppDbContext context)
+    public ParticipationController(
+        AppDbContext context,
+        IEmailService emailService,
+        IInvitationPdfService pdfService,
+        IWebHostEnvironment env)
     {
         _context = context;
+        _emailService = emailService;
+        _pdfService = pdfService;
+        _env = env;
     }
 
     // GET: api/Participation/event/1
@@ -76,6 +87,16 @@ public class ParticipationController : ControllerBase
         _context.Participations.Add(participation);
         await _context.SaveChangesAsync();
 
+        // Automatically generate pass + program and dispatch email to participant
+        try
+        {
+            await ProcessAndSendPassAsync(participation.IdParticipation);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Warning] Failed to auto-send pass email: {ex.Message}");
+        }
+
         var response = new ParticipationResponseDto(
             participation.IdParticipation,
             evt.IdEvent,
@@ -92,6 +113,7 @@ public class ParticipationController : ControllerBase
 
         return Ok(response);
     }
+
     // PUT: api/Participation/5
     [HttpPut("{id}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
@@ -116,7 +138,7 @@ public class ParticipationController : ControllerBase
         return NoContent();
     }
 
-// DELETE: api/Participation/5
+    // DELETE: api/Participation/5
     [HttpDelete("{id}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteParticipation(int id)
@@ -129,6 +151,7 @@ public class ParticipationController : ControllerBase
 
         return Ok(new { message = $"Participation record {id} deleted successfully." });
     }
+
     // POST: api/Participation/check-in
     [HttpPost("check-in")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
@@ -203,5 +226,135 @@ public class ParticipationController : ControllerBase
             AttendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
             CheckInTime: pt.CheckInTime
         ));
+    }
+
+    // POST: api/Participation/5/send-pass
+    [HttpPost("{participationId:int}/send-pass")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> SendPassEmail(int participationId)
+    {
+        var relativePdfPath = await ProcessAndSendPassAsync(participationId);
+
+        if (relativePdfPath == null)
+        {
+            return NotFound(new { message = $"Participation record with ID {participationId} not found." });
+        }
+
+        return Ok(new { 
+            message = "Pass and Event Program generated and emailed successfully!",
+            pdfUrl = relativePdfPath
+        });
+    }
+
+    /// <summary>
+    /// Helper method to generate both QR Pass & Event Program PDFs, then email them to the participant.
+    /// </summary>
+    private async Task<string?> ProcessAndSendPassAsync(int participationId)
+    {
+        var pt = await _context.Participations
+            .Include(p => p.Event)
+                .ThenInclude(e => e.Company)
+            .Include(p => p.Person)
+            .Include(p => p.Invitation)
+            .FirstOrDefaultAsync(p => p.IdParticipation == participationId);
+
+        if (pt == null) return null;
+
+        // 1. Generate or reuse unique QR payload
+        string qrPayload = pt.Invitation?.QRCode ?? $"EVENTHUB-{pt.IdEvent}-{pt.IdPerson}-{Guid.NewGuid():N}";
+        string wwwroot = _env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+
+        // 2. Generate Access Pass PDF via QuestPDF service
+        string relativePassPath = _pdfService.GenerateInvitationPdf(
+            participationId: pt.IdParticipation,
+            eventTitle: pt.Event.Title,
+            companyName: pt.Event.Company?.Name ?? "Event Organizer",
+            eventDate: pt.Event.Date,
+            startTime: pt.Event.StartTime,
+            address: pt.Event.Address,
+            personName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+            personEmail: pt.Person.Email,
+            qrPayload: qrPayload
+        );
+        string physicalPassPath = Path.Combine(wwwroot, relativePassPath.TrimStart('/'));
+
+        // 3. Generate Event Program PDF via QuestPDF service
+        string relativeProgramPath = _pdfService.GenerateEventProgramPdf(
+            eventId: pt.Event.IdEvent,
+            eventTitle: pt.Event.Title,
+            description: pt.Event.Description,
+            companyName: pt.Event.Company?.Name ?? "Event Organizer",
+            eventDate: pt.Event.Date,
+            startTime: pt.Event.StartTime,
+            endTime: pt.Event.EndTime,
+            address: pt.Event.Address,
+            spokesperson: null
+        );
+        string physicalProgramPath = Path.Combine(wwwroot, relativeProgramPath.TrimStart('/'));
+
+        // 4. Track Invitation record in Database
+        if (pt.Invitation == null)
+        {
+            pt.Invitation = new Invitation
+            {
+                IdParticipation = pt.IdParticipation,
+                QRCode = qrPayload,
+                PDFPath = relativePassPath,
+                CreatedAt = DateTime.UtcNow
+            };
+            _context.Invitations.Add(pt.Invitation);
+        }
+        else
+        {
+            pt.Invitation.PDFPath = relativePassPath;
+        }
+
+        // 5. Build Attachments Collection
+        string safeTitle = pt.Event.Title.Replace(" ", "_");
+        var attachments = new List<EmailAttachmentDto>
+        {
+            new EmailAttachmentDto(physicalPassPath, $"Pass_{safeTitle}.pdf"),
+            new EmailAttachmentDto(physicalProgramPath, $"Program_{safeTitle}.pdf")
+        };
+
+        // Safely format date & time strings before string interpolation to avoid FormatException
+        string formattedDate = pt.Event.Date.ToString("MMMM dd, yyyy");
+        string formattedTime = pt.Event.StartTime.ToString(@"hh\:mm");
+
+        // 6. Build Email HTML Body
+        string htmlBody = $@"
+            <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;'>
+                <h2 style='color: #1a56db; margin-top: 0;'>🎟️ Your Event Pass & Official Program</h2>
+                <p>Hello <strong>{pt.Person.FirstName} {pt.Person.LastName}</strong>,</p>
+                <p>You are officially registered for <strong>{pt.Event.Title}</strong>!</p>
+                <hr style='border: none; border-top: 1px solid #eee; margin: 15px 0;' />
+                <p><strong>📅 Date:</strong> {formattedDate}<br/>
+                   <strong>⏰ Time:</strong> {formattedTime}<br/>
+                   <strong>📍 Venue:</strong> {pt.Event.Address}</p>
+                <hr style='border: none; border-top: 1px solid #eee; margin: 15px 0;' />
+                <p>We've attached two documents to this email for your convenience:</p>
+                <ul>
+                    <li><strong>Your Access Pass (PDF):</strong> Contains your personal QR code for check-in at entry.</li>
+                    <li><strong>Event Program (PDF):</strong> Details the full schedule and event info.</li>
+                </ul>
+                <br/>
+                <p>See you there!<br/><strong>The EventHub Team</strong></p>
+            </div>";
+
+        // 7. Dispatch Email with both PDF attachments via MailKit/Gmail
+        await _emailService.SendEmailWithAttachmentsAsync(
+            toEmail: pt.Person.Email,
+            subject: $"🎟️ Access Pass & Program: {pt.Event.Title}",
+            bodyHtml: htmlBody,
+            attachments: attachments
+        );
+
+        // 8. Update status in DB
+        pt.Invitation.SentEmail = true;
+        pt.Invitation.EmailSentDate = DateTime.UtcNow;
+
+        await _context.SaveChangesAsync();
+
+        return relativePassPath;
     }
 }
