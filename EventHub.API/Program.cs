@@ -15,6 +15,8 @@ QuestPDF.Settings.License = LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// whatsapp Service builder
+builder.Services.AddHttpClient<IWhatsAppService, WhatsAppService>();
 // Email services builder
 builder.Services.AddScoped<IEmailService, EmailService>();
 // 2. Register DbContext with SQL Server
@@ -122,6 +124,11 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.Use(async (context, next) =>
+{
+    context.Response.Headers.Append("ngrok-skip-browser-warning", "true");
+    await next();
+});
 // Enables serving uploaded/generated files (e.g. PDFs, QR passes) from wwwroot/
 app.UseStaticFiles();
 

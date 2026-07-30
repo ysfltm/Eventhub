@@ -14,6 +14,7 @@ public class ParticipationController : ControllerBase
 {
     private readonly AppDbContext _context;
     private readonly IEmailService _emailService;
+    private readonly IWhatsAppService _whatsAppService;
     private readonly IInvitationPdfService _pdfService;
     private readonly IWebHostEnvironment _env;
 
@@ -21,10 +22,12 @@ public class ParticipationController : ControllerBase
         AppDbContext context,
         IEmailService emailService,
         IInvitationPdfService pdfService,
+        IWhatsAppService whatsAppService,
         IWebHostEnvironment env)
     {
         _context = context;
         _emailService = emailService;
+        _whatsAppService = whatsAppService;
         _pdfService = pdfService;
         _env = env;
     }
@@ -87,14 +90,14 @@ public class ParticipationController : ControllerBase
         _context.Participations.Add(participation);
         await _context.SaveChangesAsync();
 
-        // Automatically generate pass + program and dispatch email to participant
+        // Automatically generate pass + program and dispatch email/WhatsApp to participant
         try
         {
             await ProcessAndSendPassAsync(participation.IdParticipation);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Warning] Failed to auto-send pass email: {ex.Message}");
+            Console.WriteLine($"[Warning] Failed to auto-send pass email/WhatsApp: {ex.Message}");
         }
 
         var response = new ParticipationResponseDto(
@@ -228,6 +231,60 @@ public class ParticipationController : ControllerBase
         ));
     }
 
+    // POST: api/Participation/5/send-invitation
+    [HttpPost("{participationId:int}/send-invitation")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> SendInvitation(int participationId)
+    {
+        var pt = await _context.Participations
+            .Include(p => p.Event)
+            .Include(p => p.Person)
+            .FirstOrDefaultAsync(p => p.IdParticipation == participationId);
+
+        if (pt == null) return NotFound("Participation record not found.");
+        if (string.IsNullOrWhiteSpace(pt.Person.Phone)) return BadRequest("Participant has no phone number.");
+
+        bool success = await _whatsAppService.SendInvitationWhatsAppAsync(
+            toPhoneNumber: pt.Person.Phone,
+            attendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+            eventTitle: pt.Event.Title
+        );
+
+        if (!success) return StatusCode(500, "Failed to dispatch WhatsApp invitation.");
+
+        return Ok(new { message = "WhatsApp invitation template sent successfully. Awaiting participant reply." });
+    }
+
+    // POST: api/Participation/event/1/send-all-invitations
+    [HttpPost("event/{eventId:int}/send-all-invitations")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> SendAllInvitations(int eventId)
+    {
+        var participations = await _context.Participations
+            .Include(p => p.Event)
+            .Include(p => p.Person)
+            .Where(p => p.IdEvent == eventId && !string.IsNullOrWhiteSpace(p.Person.Phone))
+            .ToListAsync();
+
+        if (!participations.Any())
+        {
+            return NotFound(new { message = "No valid participants with phone numbers found for this event." });
+        }
+
+        // Run all WhatsApp invitations concurrently in parallel
+        var tasks = participations.Select(pt => _whatsAppService.SendInvitationWhatsAppAsync(
+            toPhoneNumber: pt.Person.Phone,
+            attendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
+            eventTitle: pt.Event.Title
+        ));
+
+        await Task.WhenAll(tasks);
+
+        return Ok(new { 
+            message = $"Bulk WhatsApp invitations dispatched to {participations.Count} participants." 
+        });
+    }
+
     // POST: api/Participation/5/send-pass
     [HttpPost("{participationId:int}/send-pass")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
@@ -241,13 +298,49 @@ public class ParticipationController : ControllerBase
         }
 
         return Ok(new { 
-            message = "Pass and Event Program generated and emailed successfully!",
+            message = "Pass and Event Program generated and emailed/WhatsApped successfully!",
             pdfUrl = relativePdfPath
         });
     }
 
+    // POST: api/Participation/event/1/send-all-passes
+    [HttpPost("event/{eventId:int}/send-all-passes")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> SendAllPasses(int eventId)
+    {
+        var participationIds = await _context.Participations
+            .Where(p => p.IdEvent == eventId)
+            .Select(p => p.IdParticipation)
+            .ToListAsync();
+
+        if (!participationIds.Any())
+        {
+            return NotFound(new { message = "No participants found for this event." });
+        }
+
+        int successCount = 0;
+
+        // Process sequentially to keep DbContext thread-safe
+        foreach (var id in participationIds)
+        {
+            try
+            {
+                var result = await ProcessAndSendPassAsync(id);
+                if (result != null) successCount++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Error] Failed processing pass for participation ID {id}: {ex.Message}");
+            }
+        }
+
+        return Ok(new { 
+            message = $"Bulk Passes & Programs generated and dispatched to {successCount}/{participationIds.Count} participants!" 
+        });
+    }
+
     /// <summary>
-    /// Helper method to generate both QR Pass & Event Program PDFs, then email them to the participant.
+    /// Helper method to generate both QR Pass & Event Program PDFs, then email and WhatsApp them to the participant.
     /// </summary>
     private async Task<string?> ProcessAndSendPassAsync(int participationId)
     {
@@ -309,7 +402,7 @@ public class ParticipationController : ControllerBase
             pt.Invitation.PDFPath = relativePassPath;
         }
 
-        // 5. Build Attachments Collection
+        // 5. Build Attachments Collection for Email
         string safeTitle = pt.Event.Title.Replace(" ", "_");
         var attachments = new List<EmailAttachmentDto>
         {
@@ -317,7 +410,7 @@ public class ParticipationController : ControllerBase
             new EmailAttachmentDto(physicalProgramPath, $"Program_{safeTitle}.pdf")
         };
 
-        // Safely format date & time strings before string interpolation to avoid FormatException
+        // Safely format date & time strings before string interpolation
         string formattedDate = pt.Event.Date.ToString("MMMM dd, yyyy");
         string formattedTime = pt.Event.StartTime.ToString(@"hh\:mm");
 
@@ -349,9 +442,54 @@ public class ParticipationController : ControllerBase
             attachments: attachments
         );
 
-        // 8. Update status in DB
+        // Update DB Email Status
         pt.Invitation.SentEmail = true;
         pt.Invitation.EmailSentDate = DateTime.UtcNow;
+
+        // 8. Dispatch WhatsApp Automated Message (if phone number is present)
+        if (!string.IsNullOrWhiteSpace(pt.Person.Phone))
+        {
+            try
+            {
+                // Active ngrok public URL pointing to local wwwroot
+                string publicBaseUrl = "https://grandkid-copy-catering.ngrok-free.dev";
+                
+                string fullPassPdfUrl = $"{publicBaseUrl}{relativePassPath}";
+                string fullProgramPdfUrl = $"{publicBaseUrl}{relativeProgramPath}";
+
+                string passCaption = $"🎟️ *Event Pass: {pt.Event.Title}*\n\n" +
+                                     $"Hello *{pt.Person.FirstName} {pt.Person.LastName}*,\n" +
+                                     $"Attached is your official entry pass with your personal QR code for check-in.";
+
+                string programCaption = $"📖 *Official Event Program: {pt.Event.Title}*";
+
+                // Send Pass PDF
+                bool passSent = await _whatsAppService.SendPassPdfWhatsAppAsync(
+                    toPhoneNumber: pt.Person.Phone,
+                    pdfPublicUrl: fullPassPdfUrl,
+                    fileName: $"Pass_{safeTitle}.pdf",
+                    caption: passCaption
+                );
+
+                // Send Program PDF
+                bool programSent = await _whatsAppService.SendPassPdfWhatsAppAsync(
+                    toPhoneNumber: pt.Person.Phone,
+                    pdfPublicUrl: fullProgramPdfUrl,
+                    fileName: $"Program_{safeTitle}.pdf",
+                    caption: programCaption
+                );
+
+                if (passSent || programSent)
+                {
+                    pt.Invitation.SentWhatsApp = true;
+                    pt.Invitation.WhatsAppSentDate = DateTime.UtcNow;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Warning] Failed to send WhatsApp documents: {ex.Message}");
+            }
+        }
 
         await _context.SaveChangesAsync();
 
