@@ -10,6 +10,7 @@ namespace EventHub.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize(Roles = "EventOrganiser,SuperAdmin,Attendee")]
 public class ParticipationController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -34,6 +35,7 @@ public class ParticipationController : ControllerBase
 
     // GET: api/Participation/event/1
     [HttpGet("event/{eventId}")]
+    
     public async Task<ActionResult<IEnumerable<ParticipationResponseDto>>> GetParticipationsByEvent(int eventId)
     {
         var list = await _context.Participations
@@ -60,7 +62,7 @@ public class ParticipationController : ControllerBase
 
     // POST: api/Participation
     [HttpPost]
-    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    [Authorize(Roles = "EventOrganiser,Attendee,SuperAdmin")]
     public async Task<ActionResult<ParticipationResponseDto>> AssignParticipant(CreateParticipationDto dto)
     {
         var evt = await _context.Events.FindAsync(dto.IdEvent);
@@ -116,6 +118,65 @@ public class ParticipationController : ControllerBase
 
         return Ok(response);
     }
+    // GET: api/Participation/my-passes
+[HttpGet("my-passes")]
+[Authorize(Roles = "Attendee,EventOrganiser,SuperAdmin")]
+public async Task<IActionResult> GetMyPasses()
+{
+    // 1. Extract IdPerson securely from JWT Claims
+    var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
+                      ?? User.FindFirst("sub")?.Value
+                      ?? User.FindFirst("nameid")?.Value;
+
+    if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int currentPersonId))
+    {
+        return Unauthorized(new { message = "Invalid token or user identity." });
+    }
+
+    // 2. Fetch all participation passes for the current user with Event & Company details
+    var myPasses = await _context.Participations
+        .Include(p => p.Event)
+            .ThenInclude(e => e.Company)
+        .Include(p => p.Invitation)
+        .Where(p => p.IdPerson == currentPersonId)
+        .OrderByDescending(p => p.Event.Date)
+        .Select(p => new
+        {
+            p.IdParticipation,
+            p.Type,
+            p.Status,
+            p.InvitationDate,
+            p.CheckInTime,
+            p.CheckOutTime,
+            Event = new
+            {
+                p.Event.IdEvent,
+                p.Event.Title,
+                p.Event.Description,
+                p.Event.Date,
+                p.Event.StartTime,
+                p.Event.EndTime,
+                p.Event.Address,
+                Company = p.Event.Company != null ? new
+                {
+                    p.Event.Company.IdCompany,
+                    p.Event.Company.Name,
+                    p.Event.Company.Email
+                } : null
+            },
+            Pass = p.Invitation != null ? new
+            {
+                p.Invitation.IdInvitation,
+                p.Invitation.QRCode,
+                p.Invitation.PDFPath,
+                p.Invitation.SentEmail,
+                p.Invitation.SentWhatsApp
+            } : null
+        })
+        .ToListAsync();
+
+    return Ok(myPasses);
+}
 
     // PUT: api/Participation/5
     [HttpPut("{id}")]
@@ -140,7 +201,45 @@ public class ParticipationController : ControllerBase
         await _context.SaveChangesAsync();
         return NoContent();
     }
+// DELETE: api/Participation/cancel/1
+    [HttpDelete("cancel/{eventId:int}")]
+    [Authorize(Roles = "Attendee,EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> CancelMyRegistration(int eventId)
+    {
+        // 1. Extract IdPerson securely from JWT NameIdentifier claim
+        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
+                          ?? User.FindFirst("sub")?.Value;
 
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int currentPersonId))
+        {
+            return Unauthorized(new { message = "Invalid token or user context." });
+        }
+
+        // 2. Locate participation record for this event and user
+        var participation = await _context.Participations
+            .Include(p => p.Event)
+            .FirstOrDefaultAsync(p => p.IdEvent == eventId && p.IdPerson == currentPersonId);
+
+        if (participation == null)
+        {
+            return NotFound(new { message = "You are not registered for this event." });
+        }
+
+        // 3. Guard against cancelling after check-in
+        if (participation.CheckInTime != null)
+        {
+            return BadRequest(new { message = "Cannot cancel registration after you have already checked in." });
+        }
+
+        // 4. Remove participation (DbContext handles cascade delete for Invitation)
+        _context.Participations.Remove(participation);
+        await _context.SaveChangesAsync();
+
+        return Ok(new { 
+            message = $"Successfully cancelled registration for '{participation.Event.Title}'.",
+            eventId = eventId
+        });
+    }
     // DELETE: api/Participation/5
     [HttpDelete("{id}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
@@ -157,7 +256,7 @@ public class ParticipationController : ControllerBase
 
     // POST: api/Participation/check-in
     [HttpPost("check-in")]
-    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    [Authorize(Roles = "EventOrganiser,SuperAdmin,Attendee")]
     public async Task<ActionResult<CheckInResponseDto>> CheckInParticipant([FromBody] CheckInRequestDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.QrPayload))

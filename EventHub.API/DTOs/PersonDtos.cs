@@ -21,5 +21,6 @@ public record PersonResponseDto(
     string Phone,
     string? Address,
     string? CompanyName,
-    string? Position 
+    string? Position, 
+    PersonRole Role
 );
