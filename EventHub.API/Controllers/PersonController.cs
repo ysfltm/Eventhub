@@ -9,6 +9,7 @@ namespace EventHub.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+
 public class PersonController : ControllerBase
 {
     private readonly AppDbContext _context;

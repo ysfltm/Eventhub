@@ -16,6 +16,11 @@ public class Person
     public PersonRole Role { get; set; } = PersonRole.Attendee; // SuperAdmin | EventOrganiser | Attendee
     
     public bool IsAccountActivated { get; set; } = false;
+    
+    
+    public string? PasswordResetToken { get; set; }
+    public DateTime? ResetTokenExpiresAt { get; set; }
+    
 
     public ICollection<Participation> Participations { get; set; } = new List<Participation>();
 }

@@ -8,6 +8,11 @@ public class EmailService : IEmailService
 {
     private readonly IConfiguration _config;
 
+    public async Task SendEmailAsync(string toEmail, string subject, string bodyHtml)
+    {
+        await SendEmailWithAttachmentsAsync(toEmail, subject, bodyHtml, Enumerable.Empty<EmailAttachmentDto>());
+    }
+    
     public EmailService(IConfiguration config)
     {
         _config = config;

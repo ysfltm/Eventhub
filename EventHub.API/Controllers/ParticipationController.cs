@@ -5,12 +5,14 @@ using EventHub.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace EventHub.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[Authorize(Roles = "EventOrganiser,SuperAdmin,Attendee")]
+// ✅ FIX 1: Expanded Class-Level Authorize attribute to include all 8 roles
+[Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
 public class ParticipationController : ControllerBase
 {
     private readonly AppDbContext _context;
@@ -33,9 +35,9 @@ public class ParticipationController : ControllerBase
         _env = env;
     }
 
-    // GET: api/Participation/event/1
+    // 1. GET: api/Participation/event/1
     [HttpGet("event/{eventId}")]
-    
+    [Authorize(Roles = "EventOrganiser,SuperAdmin,Staff,Sponsor,Attendee,VIP,Spokesperson,Speaker")]
     public async Task<ActionResult<IEnumerable<ParticipationResponseDto>>> GetParticipationsByEvent(int eventId)
     {
         var list = await _context.Participations
@@ -60,20 +62,37 @@ public class ParticipationController : ControllerBase
         return Ok(list);
     }
 
-    // POST: api/Participation
+    // 2. POST: api/Participation
     [HttpPost]
-    [Authorize(Roles = "EventOrganiser,Attendee,SuperAdmin")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 2: Removed leading space before Attendee
     public async Task<ActionResult<ParticipationResponseDto>> AssignParticipant(CreateParticipationDto dto)
     {
+        // ✅ FIX 3: Enforce self-registration for non-Organiser users to prevent impersonation
+        int targetPersonId = dto.IdPerson;
+        bool isOrganiserOrAdmin = User.IsInRole("EventOrganiser") || User.IsInRole("SuperAdmin");
+
+        if (!isOrganiserOrAdmin)
+        {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                              ?? User.FindFirst("sub")?.Value 
+                              ?? User.FindFirst("nameid")?.Value;
+
+            if (!int.TryParse(userIdClaim, out int currentPersonId))
+            {
+                return Unauthorized(new { message = "Invalid token or user identity." });
+            }
+            targetPersonId = currentPersonId;
+        }
+
         var evt = await _context.Events.FindAsync(dto.IdEvent);
         if (evt == null) return BadRequest("Event does not exist.");
 
-        var person = await _context.People.FindAsync(dto.IdPerson);
+        var person = await _context.People.FindAsync(targetPersonId);
         if (person == null) return BadRequest("Person does not exist.");
 
         // Prevent duplicate registration for the same event
         var exists = await _context.Participations
-            .AnyAsync(pt => pt.IdEvent == dto.IdEvent && pt.IdPerson == dto.IdPerson);
+            .AnyAsync(pt => pt.IdEvent == dto.IdEvent && pt.IdPerson == targetPersonId);
 
         if (exists)
         {
@@ -83,8 +102,8 @@ public class ParticipationController : ControllerBase
         var participation = new Participation
         {
             IdEvent = dto.IdEvent,
-            IdPerson = dto.IdPerson,
-            Type = dto.Type,
+            IdPerson = targetPersonId,
+            Type = string.IsNullOrWhiteSpace(dto.Type) ? "Attendee" : dto.Type,
             Status = "Invited",
             InvitationDate = DateTime.UtcNow
         };
@@ -118,67 +137,69 @@ public class ParticipationController : ControllerBase
 
         return Ok(response);
     }
-    // GET: api/Participation/my-passes
-[HttpGet("my-passes")]
-[Authorize(Roles = "Attendee,EventOrganiser,SuperAdmin")]
-public async Task<IActionResult> GetMyPasses()
-{
-    // 1. Extract IdPerson securely from JWT Claims
-    var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
-                      ?? User.FindFirst("sub")?.Value
-                      ?? User.FindFirst("nameid")?.Value;
 
-    if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int currentPersonId))
+    // 3. GET: api/Participation/my-passes
+    [HttpGet("my-passes")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 4: Removed leading space before Attendee
+    public async Task<IActionResult> GetMyPasses()
     {
-        return Unauthorized(new { message = "Invalid token or user identity." });
+        // 1. Extract IdPerson securely from JWT Claims
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
+                          ?? User.FindFirst("sub")?.Value
+                          ?? User.FindFirst("nameid")?.Value;
+
+        if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int currentPersonId))
+        {
+            return Unauthorized(new { message = "Invalid token or user identity." });
+        }
+
+        // 2. Fetch all participation passes for the current user with Event & Company details
+        var myPasses = await _context.Participations
+            .Include(p => p.Event)
+                .ThenInclude(e => e.Company)
+            .Include(p => p.Invitation)
+            .Where(p => p.IdPerson == currentPersonId)
+            .OrderByDescending(p => p.Event.Date)
+            .Select(p => new
+            {
+                p.IdParticipation,
+                p.IdEvent,
+                p.Type,
+                p.Status,
+                p.InvitationDate,
+                p.CheckInTime,
+                p.CheckOutTime,
+                Event = new
+                {
+                    p.Event.IdEvent,
+                    p.Event.Title,
+                    p.Event.Description,
+                    p.Event.Date,
+                    p.Event.StartTime,
+                    p.Event.EndTime,
+                    p.Event.Address,
+                    Company = p.Event.Company != null ? new
+                    {
+                        p.Event.Company.IdCompany,
+                        p.Event.Company.Name,
+                        p.Event.Company.Email
+                    } : null
+                },
+                Pass = p.Invitation != null ? new
+                {
+                    p.Invitation.IdInvitation,
+                    p.Invitation.QRCode,
+                    p.Invitation.PDFPath,
+                    p.Invitation.SentEmail,
+                    p.Invitation.SentWhatsApp
+                } : null
+            })
+            .ToListAsync();
+
+        return Ok(myPasses);
     }
 
-    // 2. Fetch all participation passes for the current user with Event & Company details
-    var myPasses = await _context.Participations
-        .Include(p => p.Event)
-            .ThenInclude(e => e.Company)
-        .Include(p => p.Invitation)
-        .Where(p => p.IdPerson == currentPersonId)
-        .OrderByDescending(p => p.Event.Date)
-        .Select(p => new
-        {
-            p.IdParticipation,
-            p.Type,
-            p.Status,
-            p.InvitationDate,
-            p.CheckInTime,
-            p.CheckOutTime,
-            Event = new
-            {
-                p.Event.IdEvent,
-                p.Event.Title,
-                p.Event.Description,
-                p.Event.Date,
-                p.Event.StartTime,
-                p.Event.EndTime,
-                p.Event.Address,
-                Company = p.Event.Company != null ? new
-                {
-                    p.Event.Company.IdCompany,
-                    p.Event.Company.Name,
-                    p.Event.Company.Email
-                } : null
-            },
-            Pass = p.Invitation != null ? new
-            {
-                p.Invitation.IdInvitation,
-                p.Invitation.QRCode,
-                p.Invitation.PDFPath,
-                p.Invitation.SentEmail,
-                p.Invitation.SentWhatsApp
-            } : null
-        })
-        .ToListAsync();
-
-    return Ok(myPasses);
-}
-
-    // PUT: api/Participation/5
+    // 4. PUT: api/Participation/5
     [HttpPut("{id}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> UpdateParticipation(int id, [FromBody] CreateParticipationDto dto)
@@ -201,52 +222,71 @@ public async Task<IActionResult> GetMyPasses()
         await _context.SaveChangesAsync();
         return NoContent();
     }
-// DELETE: api/Participation/cancel/1
+
+    // DELETE: api/Participation/cancel/1
     [HttpDelete("cancel/{eventId:int}")]
-    [Authorize(Roles = "Attendee,EventOrganiser,SuperAdmin")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> CancelMyRegistration(int eventId)
     {
-        // 1. Extract IdPerson securely from JWT NameIdentifier claim
         var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
-                          ?? User.FindFirst("sub")?.Value;
+                          ?? User.FindFirst("sub")?.Value
+                          ?? User.FindFirst("nameid")?.Value
+                          ?? User.FindFirst("id")?.Value;
 
         if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int currentPersonId))
         {
             return Unauthorized(new { message = "Invalid token or user context." });
         }
 
-        // 2. Locate participation record for this event and user
+        bool isAdmin = User.IsInRole("SuperAdmin") || User.IsInRole("EventOrganiser");
+
+        // ✅ FIX 1: Allow Admins/Organisers to cancel any pass for the event
         var participation = await _context.Participations
             .Include(p => p.Event)
-            .FirstOrDefaultAsync(p => p.IdEvent == eventId && p.IdPerson == currentPersonId);
+            .Include(p => p.Invitation) // ✅ Include Invitation
+            .FirstOrDefaultAsync(p => p.IdEvent == eventId && (p.IdPerson == currentPersonId || isAdmin));
 
         if (participation == null)
         {
             return NotFound(new { message = "You are not registered for this event." });
         }
 
-        // 3. Guard against cancelling after check-in
         if (participation.CheckInTime != null)
         {
             return BadRequest(new { message = "Cannot cancel registration after you have already checked in." });
         }
 
-        // 4. Remove participation (DbContext handles cascade delete for Invitation)
+        // ✅ FIX 2: Delete QR Invitation first to prevent SQL Foreign Key Exception
+        if (participation.Invitation != null)
+        {
+            _context.Invitations.Remove(participation.Invitation);
+        }
+
         _context.Participations.Remove(participation);
         await _context.SaveChangesAsync();
 
         return Ok(new { 
-            message = $"Successfully cancelled registration for '{participation.Event.Title}'.",
+            message = $"Successfully cancelled registration for '{participation.Event?.Title ?? "Event"}'.",
             eventId = eventId
         });
     }
+
     // DELETE: api/Participation/5
-    [HttpDelete("{id}")]
+    [HttpDelete("{id:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteParticipation(int id)
     {
-        var pt = await _context.Participations.FindAsync(id);
+        var pt = await _context.Participations
+            .Include(p => p.Invitation)
+            .FirstOrDefaultAsync(p => p.IdParticipation == id);
+
         if (pt == null) return NotFound("Participation record not found.");
+
+        // ✅ FIX 3: Delete QR Invitation first to prevent SQL Foreign Key Exception
+        if (pt.Invitation != null)
+        {
+            _context.Invitations.Remove(pt.Invitation);
+        }
 
         _context.Participations.Remove(pt);
         await _context.SaveChangesAsync();
@@ -254,9 +294,10 @@ public async Task<IActionResult> GetMyPasses()
         return Ok(new { message = $"Participation record {id} deleted successfully." });
     }
 
-    // POST: api/Participation/check-in
+
+    // 7. POST: api/Participation/check-in
     [HttpPost("check-in")]
-    [Authorize(Roles = "EventOrganiser,SuperAdmin,Attendee")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 6: Removed leading space before Attendee
     public async Task<ActionResult<CheckInResponseDto>> CheckInParticipant([FromBody] CheckInRequestDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.QrPayload))
@@ -330,7 +371,7 @@ public async Task<IActionResult> GetMyPasses()
         ));
     }
 
-    // POST: api/Participation/5/send-invitation
+    // 8. POST: api/Participation/5/send-invitation
     [HttpPost("{participationId:int}/send-invitation")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendInvitation(int participationId)
@@ -354,7 +395,7 @@ public async Task<IActionResult> GetMyPasses()
         return Ok(new { message = "WhatsApp invitation template sent successfully. Awaiting participant reply." });
     }
 
-    // POST: api/Participation/event/1/send-all-invitations
+    // 9. POST: api/Participation/event/1/send-all-invitations
     [HttpPost("event/{eventId:int}/send-all-invitations")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendAllInvitations(int eventId)
@@ -384,7 +425,7 @@ public async Task<IActionResult> GetMyPasses()
         });
     }
 
-    // POST: api/Participation/5/send-pass
+    // 10. POST: api/Participation/5/send-pass
     [HttpPost("{participationId:int}/send-pass")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendPassEmail(int participationId)
@@ -402,7 +443,7 @@ public async Task<IActionResult> GetMyPasses()
         });
     }
 
-    // POST: api/Participation/event/1/send-all-passes
+    // 11. POST: api/Participation/event/1/send-all-passes
     [HttpPost("event/{eventId:int}/send-all-passes")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendAllPasses(int eventId)
@@ -438,9 +479,7 @@ public async Task<IActionResult> GetMyPasses()
         });
     }
 
-    /// <summary>
-    /// Helper method to generate both QR Pass & Event Program PDFs, then email and WhatsApp them to the participant.
-    /// </summary>
+    // 12. Helper method: ProcessAndSendPassAsync
     private async Task<string?> ProcessAndSendPassAsync(int participationId)
     {
         var pt = await _context.Participations
@@ -511,7 +550,7 @@ public async Task<IActionResult> GetMyPasses()
 
         // Safely format date & time strings before string interpolation
         string formattedDate = pt.Event.Date.ToString("MMMM dd, yyyy");
-        string formattedTime = pt.Event.StartTime.ToString(@"hh\:mm");
+        string formattedTime = DateTime.Today.Add(pt.Event.StartTime).ToString("hh:mm tt");
 
         // 6. Build Email HTML Body
         string htmlBody = $@"
@@ -550,7 +589,6 @@ public async Task<IActionResult> GetMyPasses()
         {
             try
             {
-                // Active ngrok public URL pointing to local wwwroot
                 string publicBaseUrl = "https://grandkid-copy-catering.ngrok-free.dev";
                 
                 string fullPassPdfUrl = $"{publicBaseUrl}{relativePassPath}";

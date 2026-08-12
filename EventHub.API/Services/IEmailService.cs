@@ -8,18 +8,19 @@ public record EmailAttachmentDto(
 
 public interface IEmailService
 {
-    /// <summary>
+   ///no attachement
+    Task SendEmailAsync(string toEmail, string subject, string bodyHtml);    
     /// Sends an email with multiple attachments.
-    /// </summary>
+    
     Task SendEmailWithAttachmentsAsync(
         string toEmail, 
         string subject, 
         string bodyHtml, 
         IEnumerable<EmailAttachmentDto> attachments);
 
-    /// <summary>
+    
     /// Sends an email with a single attachment.
-    /// </summary>
+    
     Task SendEmailWithAttachmentAsync(
         string toEmail, 
         string subject, 

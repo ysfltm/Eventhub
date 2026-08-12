@@ -35,7 +35,7 @@ public class EventController : ControllerBase
             .Select(e => new EventResponseDto(
                 e.IdEvent,
                 e.IdCompany,
-                e.Company.Name,
+                e.Company != null ? e.Company.Name : "Independent Session", // ✅ FIX: Null-safe company name
                 e.Title,
                 e.Description,
                 e.Address,
@@ -52,7 +52,7 @@ public class EventController : ControllerBase
     }
 
     // GET: api/Event/5
-    [HttpGet("{id}")]
+    [HttpGet("{id:int}")]
     public async Task<ActionResult<EventResponseDto>> GetEvent(int id)
     {
         var e = await _context.Events
@@ -64,7 +64,7 @@ public class EventController : ControllerBase
         return Ok(new EventResponseDto(
             e.IdEvent,
             e.IdCompany,
-            e.Company.Name,
+            e.Company != null ? e.Company.Name : "Independent Session", // ✅ FIX: Null-safe company name
             e.Title,
             e.Description,
             e.Address,
@@ -82,11 +82,16 @@ public class EventController : ControllerBase
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<ActionResult<EventResponseDto>> CreateEvent([FromBody] CreateEventDto dto)
     {
-        // Verify company exists
-        var company = await _context.Companies.FindAsync(dto.IdCompany);
-        if (company == null)
+        string companyName = "Independent Session";
+
+        if (dto.IdCompany > 0)
         {
-            return BadRequest(new { message = $"Company with ID {dto.IdCompany} does not exist." });
+            var company = await _context.Companies.FindAsync(dto.IdCompany);
+            if (company == null)
+            {
+                return BadRequest(new { message = $"Company with ID {dto.IdCompany} does not exist." });
+            }
+            companyName = company.Name;
         }
 
         var newEvent = new Event
@@ -108,7 +113,7 @@ public class EventController : ControllerBase
         var response = new EventResponseDto(
             newEvent.IdEvent,
             newEvent.IdCompany,
-            company.Name,
+            companyName,
             newEvent.Title,
             newEvent.Description,
             newEvent.Address,
@@ -124,7 +129,7 @@ public class EventController : ControllerBase
     }
 
     // POST: api/Event/{id}/upload-program
-    [HttpPost("{id}/upload-program")]
+    [HttpPost("{id:int}/upload-program")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> UploadProgramPdf(int id, IFormFile file)
     {
@@ -137,7 +142,6 @@ public class EventController : ControllerBase
         if (!file.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase))
             return BadRequest("Only PDF files are allowed.");
 
-        // Save file to wwwroot/programs/
         string uploadsFolder = Path.Combine(_environment.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "programs");
         Directory.CreateDirectory(uploadsFolder);
 
@@ -156,7 +160,7 @@ public class EventController : ControllerBase
     }
 
     // POST: api/Event/{id}/generate-program
-    [HttpPost("{id}/generate-program")]
+    [HttpPost("{id:int}/generate-program")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> GenerateProgramPdf(int id, [FromBody] List<string>? sponsorNames = null)
     {
@@ -166,12 +170,11 @@ public class EventController : ControllerBase
 
         if (evt == null) return NotFound("Event not found.");
 
-        // Generate PDF via QuestPDF service
         string relativePath = _pdfService.GenerateEventProgramPdf(
             evt.IdEvent,
             evt.Title,
             evt.Description,
-            evt.Company.Name,
+            evt.Company != null ? evt.Company.Name : "Event Organizer",
             evt.Date,
             evt.StartTime,
             evt.EndTime,
@@ -180,7 +183,6 @@ public class EventController : ControllerBase
             sponsorNames
         );
 
-        // Save generated path to DB
         evt.ProgramPath = relativePath;
         await _context.SaveChangesAsync();
 
@@ -191,16 +193,18 @@ public class EventController : ControllerBase
     }
 
     // PUT: api/Event/5
-    [HttpPut("{id}")]
+    [HttpPut("{id:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> UpdateEvent(int id, CreateEventDto dto)
     {
         var evt = await _context.Events.FindAsync(id);
         if (evt == null) return NotFound("Event not found.");
 
-        // Validate that the company exists
-        var companyExists = await _context.Companies.AnyAsync(c => c.IdCompany == dto.IdCompany);
-        if (!companyExists) return BadRequest("Associated company does not exist.");
+        if (dto.IdCompany > 0)
+        {
+            var companyExists = await _context.Companies.AnyAsync(c => c.IdCompany == dto.IdCompany);
+            if (!companyExists) return BadRequest("Associated company does not exist.");
+        }
 
         evt.IdCompany = dto.IdCompany;
         evt.Title = dto.Title;
@@ -214,7 +218,7 @@ public class EventController : ControllerBase
     }
 
     // DELETE: api/Event/5
-    [HttpDelete("{id}")]
+    [HttpDelete("{id:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteEvent(int id)
     {

@@ -22,7 +22,8 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 // 2. Register DbContext with SQL Server
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-
+// profanity filter
+builder.Services.AddSingleton<IProfanityFilterService, ProfanityFilterService>();
 // 3. Register Custom Application Services (Dependency Injection)
 builder.Services.AddScoped<IQRCodeService, QRCodeService>();
 builder.Services.AddScoped<IInvitationPdfService, InvitationPdfService>();

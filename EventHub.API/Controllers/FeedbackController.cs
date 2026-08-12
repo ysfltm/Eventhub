@@ -2,6 +2,7 @@
 using EventHub.API.Data;
 using EventHub.API.DTOs;
 using EventHub.API.Models;
+using EventHub.API.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -13,10 +14,12 @@ namespace EventHub.API.Controllers;
 public class FeedbackController : ControllerBase
 {
     private readonly AppDbContext _context;
+    private readonly IProfanityFilterService _profanityFilter;
 
-    public FeedbackController(AppDbContext context)
+    public FeedbackController(AppDbContext context, IProfanityFilterService profanityFilter)
     {
         _context = context;
+        _profanityFilter = profanityFilter;
     }
 
     // POST: api/Feedback
@@ -24,7 +27,13 @@ public class FeedbackController : ControllerBase
     [Authorize] // Requires Bearer Token
     public async Task<ActionResult<FeedbackResponseDto>> CreateFeedback([FromBody] CreateFeedbackDto dto)
     {
-        // 1. Extract logged-in User's ID from JWT Claims
+        // 1. Check for profanity in comments
+        if (_profanityFilter.ContainsProfanity(dto.Comment))
+        {
+            return BadRequest("Your comment contains inappropriate or offensive language. Please revise it before submitting.");
+        }
+
+        // 2. Extract logged-in User's ID from JWT Claims
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                        ?? User.FindFirst("sub")?.Value;
 
@@ -33,13 +42,13 @@ public class FeedbackController : ControllerBase
             return Unauthorized("User identity could not be verified from token.");
         }
 
-        // 2. Validate rating range (1-5)
+        // 3. Validate rating range (1-5)
         if (dto.Rating < 1 || dto.Rating > 5)
         {
             return BadRequest("Rating must be an integer between 1 and 5.");
         }
 
-        // 3. Find the Participation record for THIS logged-in user at THIS event
+        // 4. Find the Participation record for THIS logged-in user at THIS event
         var pt = await _context.Participations
             .Include(p => p.Event)
             .Include(p => p.Person)
@@ -50,13 +59,13 @@ public class FeedbackController : ControllerBase
             return BadRequest("You are not registered for this event.");
         }
 
-        // 4. Ensure attendee actually checked in
+        // 5. Ensure attendee actually checked in
         if (pt.CheckInTime == null)
         {
             return BadRequest("You can only submit feedback after checking into the event.");
         }
 
-        // 5. Prevent duplicate feedback
+        // 6. Prevent duplicate feedback
         var exists = await _context.Feedbacks
             .AnyAsync(f => f.IdParticipation == pt.IdParticipation);
 
@@ -169,6 +178,12 @@ public class FeedbackController : ControllerBase
     [Authorize]
     public async Task<IActionResult> UpdateFeedback(int id, [FromBody] UpdateFeedbackDto dto)
     {
+        // Check profanity when editing feedback comments
+        if (_profanityFilter.ContainsProfanity(dto.Comment))
+        {
+            return BadRequest("Your comment contains inappropriate or offensive language. Please revise it before submitting.");
+        }
+
         if (dto.Rating < 1 || dto.Rating > 5)
         {
             return BadRequest("Rating must be an integer between 1 and 5.");
@@ -186,7 +201,7 @@ public class FeedbackController : ControllerBase
 
     // DELETE: api/Feedback/5
     [HttpDelete("{id}")]
-    [Authorize(Roles = "EventOrganiser,SuperAdmin")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteFeedback(int id)
     {
         var feedback = await _context.Feedbacks.FindAsync(id);
