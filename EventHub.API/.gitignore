@@ -482,5 +482,9 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
-w w w r o o t / i n v i t a t i o n s / * . p d f  
+w w w r o o t / i n v i t a t i o n s / * . p d f 
  
+ 
+
+# Ignore local development settings containing secrets
+appsettings.Development.json

@@ -14,6 +14,7 @@ public class Event
     public string? Person { get; set; }
     public string? ProgramPath { get; set; }
 
+    public int Capacity { get; set; } = 100;
     public Company Company { get; set; } = null!;
     public ICollection<Participation> Participations { get; set; } = new List<Participation>();
     public ICollection<Feedback> Feedbacks { get; set; } = new List<Feedback>();

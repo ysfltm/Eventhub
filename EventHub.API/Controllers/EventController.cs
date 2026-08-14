@@ -44,7 +44,8 @@ public class EventController : ControllerBase
                 e.EndTime,
                 e.Status,
                 e.Person,
-                e.ProgramPath
+                e.ProgramPath,
+                e.Capacity
             ))
             .ToListAsync();
 
@@ -73,7 +74,8 @@ public class EventController : ControllerBase
             e.EndTime,
             e.Status,
             e.Person,
-            e.ProgramPath
+            e.ProgramPath,
+            e.Capacity
         ));
     }
 
@@ -104,7 +106,9 @@ public class EventController : ControllerBase
             StartTime = dto.StartTime,
             EndTime = dto.EndTime,
             Person = dto.Person,
+            Capacity = dto.Capacity > 0 ? dto.Capacity : 100,
             Status = "Scheduled"
+            
         };
 
         _context.Events.Add(newEvent);
@@ -122,7 +126,8 @@ public class EventController : ControllerBase
             newEvent.EndTime,
             newEvent.Status,
             newEvent.Person,
-            newEvent.ProgramPath
+            newEvent.ProgramPath,
+            newEvent.Capacity
         );
 
         return CreatedAtAction(nameof(GetEvent), new { id = newEvent.IdEvent }, response);
@@ -208,10 +213,13 @@ public class EventController : ControllerBase
 
         evt.IdCompany = dto.IdCompany;
         evt.Title = dto.Title;
+        evt.Description = dto.Description; 
+        evt.Person = dto.Person;
         evt.Date = dto.Date;
         evt.StartTime = dto.StartTime;
         evt.EndTime = dto.EndTime;
         evt.Address = dto.Address;
+        if (dto.Capacity > 0) evt.Capacity = dto.Capacity;
 
         await _context.SaveChangesAsync();
         return NoContent();
@@ -222,12 +230,34 @@ public class EventController : ControllerBase
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteEvent(int id)
     {
-        var evt = await _context.Events.FindAsync(id);
+        var evt = await _context.Events
+            .Include(e => e.Feedbacks)
+            .Include(e => e.Participations)
+            .ThenInclude(p => p.Invitation)
+            .FirstOrDefaultAsync(e => e.IdEvent == id);
+
         if (evt == null) return NotFound("Event not found.");
 
+        // 1. Manually remove feedbacks to break the dual-cascade conflict
+        if (evt.Feedbacks.Any())
+        {
+            _context.Feedbacks.RemoveRange(evt.Feedbacks);
+        }
+
+        // 2. Manually remove invitations tied to event participations
+        var invitations = evt.Participations
+            .Where(p => p.Invitation != null)
+            .Select(p => p.Invitation!);
+
+        if (invitations.Any())
+        {
+            _context.Invitations.RemoveRange(invitations);
+        }
+
+        // 3. Delete event (EF Core handles Participations)
         _context.Events.Remove(evt);
         await _context.SaveChangesAsync();
 
-        return Ok(new { message = $"Event '{evt.Title}' and its associated records were deleted." });
+        return Ok(new { message = $"Event '{evt.Title}' and its associated records were deleted successfully." });
     }
 }

@@ -8,7 +8,8 @@ public record CreateEventDto(
     DateTime Date,
     TimeSpan StartTime,
     TimeSpan EndTime,
-    string? Person
+    string? Person,
+    int Capacity
 );
 
 public record EventResponseDto(
@@ -23,5 +24,6 @@ public record EventResponseDto(
     TimeSpan EndTime,
     string Status,
     string? Person,
-    string? ProgramPath
+    string? ProgramPath,
+    int Capacity
 );

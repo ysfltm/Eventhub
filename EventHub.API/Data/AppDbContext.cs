@@ -65,7 +65,7 @@ public class AppDbContext : DbContext
             entity.HasOne(pt => pt.Person)
                   .WithMany(p => p.Participations)
                   .HasForeignKey(pt => pt.IdPerson)
-                  .OnDelete(DeleteBehavior.Restrict);
+                  .OnDelete(DeleteBehavior.Restrict); // ✅ Keeps Person safe!
 
             entity.HasIndex(pt => new { pt.IdEvent, pt.IdPerson }).IsUnique();
         });
@@ -84,15 +84,16 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(f => f.IdFeedback);
 
+            // ✅ FIX: Changed NoAction to Cascade so deleting Event cleans up Feedbacks
             entity.HasOne(f => f.Event)
-                  .WithMany(e => e.Feedbacks)
-                  .HasForeignKey(f => f.IdEvent)
-                  .OnDelete(DeleteBehavior.NoAction);
+                .WithMany(e => e.Feedbacks)
+                .HasForeignKey(f => f.IdEvent)
+                .OnDelete(DeleteBehavior.NoAction);
 
             entity.HasOne(f => f.Participation)
-                  .WithOne(pt => pt.Feedback)
-                  .HasForeignKey<Feedback>(f => f.IdParticipation)
-                  .OnDelete(DeleteBehavior.Cascade);
+                .WithOne(pt => pt.Feedback)
+                .HasForeignKey<Feedback>(f => f.IdParticipation)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

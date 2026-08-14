@@ -86,6 +86,19 @@ public class ParticipationController : ControllerBase
 
         var evt = await _context.Events.FindAsync(dto.IdEvent);
         if (evt == null) return BadRequest("Event does not exist.");
+        // ✅ CHECK 1: Ensure event hasn't already passed
+        var eventStartDateTime = evt.Date.Date + evt.StartTime;
+        if (DateTime.UtcNow >= eventStartDateTime)
+        {
+            return BadRequest("Cannot register for this event as registration is closed or the event has already passed.");
+        }
+
+        // ✅ CHECK 2: Ensure capacity isn't reached
+        int currentRegistrations = await _context.Participations.CountAsync(pt => pt.IdEvent == dto.IdEvent);
+        if (evt.Capacity > 0 && currentRegistrations >= evt.Capacity)
+        {
+            return BadRequest($"This event has reached its maximum capacity of {evt.Capacity} participants.");
+        }
 
         var person = await _context.People.FindAsync(targetPersonId);
         if (person == null) return BadRequest("Person does not exist.");
