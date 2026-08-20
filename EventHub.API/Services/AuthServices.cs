@@ -171,9 +171,10 @@ public class AuthService : IAuthService
         person.PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.NewPassword);
 
         // Clear token fields so it cannot be re-used
+        person.IsAccountActivated = true; 
         person.PasswordResetToken = null;
         person.ResetTokenExpiresAt = null;
-
+        
         await _context.SaveChangesAsync();
 
         return "Password reset successfully! You can now log in with your new password.";
