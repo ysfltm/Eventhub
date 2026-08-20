@@ -10,7 +10,7 @@ public class Person
     public string? Address { get; set; }
     public string? CompanyName { get; set; }
     public string? Position { get; set; }
-    
+    public int? IdCompany { get; set; }
     public string? PasswordHash { get; set; } // Nullable until account activated
     
     public PersonRole Role { get; set; } = PersonRole.Attendee; // SuperAdmin | EventOrganiser | Attendee
@@ -20,7 +20,7 @@ public class Person
     
     public string? PasswordResetToken { get; set; }
     public DateTime? ResetTokenExpiresAt { get; set; }
-    
-
+    public string? LinkedInUrl { get; set; }
+    public Company? Company { get; set; } 
     public ICollection<Participation> Participations { get; set; } = new List<Participation>();
 }

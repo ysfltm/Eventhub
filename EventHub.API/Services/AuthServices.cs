@@ -33,6 +33,7 @@ public class AuthService : IAuthService
 
         var person = new Person
         {
+            IdCompany = dto.IdCompany,
             FirstName = dto.FirstName,
             LastName = dto.LastName,
             Email = dto.Email,
@@ -56,6 +57,8 @@ public class AuthService : IAuthService
             person.Email,
             person.Role.ToString(),
             person.FirstName,
+            person.LinkedInUrl,
+            person.IdCompany,
             person.LastName
         );
     }
@@ -87,6 +90,8 @@ public class AuthService : IAuthService
             person.Email,
             person.Role.ToString(),
             person.FirstName,
+            person.LinkedInUrl,
+            person.IdCompany,
             person.LastName
         );
     }
@@ -178,9 +183,10 @@ public class AuthService : IAuthService
     {
         var jwtSettings = _configuration.GetSection("Jwt");
         var key = Encoding.UTF8.GetBytes(jwtSettings["Secret"] 
-            ?? throw new InvalidOperationException("JWT Secret key is missing in configuration."));
+                                         ?? throw new InvalidOperationException("JWT Secret key is missing in configuration."));
 
-        var claims = new[]
+        // 👇 Change from "new[]" to "new List<Claim>"
+        var claims = new List<Claim>
         {
             new Claim(ClaimTypes.NameIdentifier, person.IdPerson.ToString()),
             new Claim(ClaimTypes.Email, person.Email),
@@ -188,6 +194,12 @@ public class AuthService : IAuthService
             new Claim("FirstName", person.FirstName),
             new Claim("LastName", person.LastName)
         };
+
+        // Now .Add() works seamlessly!
+        if (person.IdCompany.HasValue)
+        {
+            claims.Add(new Claim("CompanyId", person.IdCompany.Value.ToString()));
+        }
 
         var tokenDescriptor = new SecurityTokenDescriptor
         {
@@ -206,4 +218,5 @@ public class AuthService : IAuthService
 
         return tokenHandler.WriteToken(token);
     }
+
 }

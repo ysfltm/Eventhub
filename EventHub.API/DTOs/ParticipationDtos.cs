@@ -20,3 +20,6 @@ public record ParticipationResponseDto(
     DateTime? CheckInTime,
     DateTime? CheckOutTime
 );
+public record UpdateParticipationStatusDto(
+    string Status // "Pending" | "Confirmed" | "Cancelled" | "CheckedIn" | "invited"
+);

@@ -1,4 +1,5 @@
-﻿using EventHub.API.Data;
+﻿using System.Security.Claims;
+using EventHub.API.Data;
 using EventHub.API.DTOs;
 using EventHub.API.Models;
 using EventHub.API.Services;
@@ -26,16 +27,35 @@ public class EventController : ControllerBase
         _pdfService = pdfService;
     }
 
-    // GET: api/Event
+    // GET: api/Event?companyId=5
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<EventResponseDto>>> GetEvents()
+    public async Task<ActionResult<IEnumerable<EventResponseDto>>> GetEvents([FromQuery] int? companyId = null)
     {
-        var events = await _context.Events
-            .Include(e => e.Company)
+        var query = _context.Events.Include(e => e.Company).AsQueryable();
+
+        // 1. Explicit query param filter (e.g. for Admin dashboards or company-specific views)
+        if (companyId.HasValue && companyId.Value > 0)
+        {
+            query = query.Where(e => e.IdCompany == companyId.Value);
+        }
+        // 2. Company Isolation: If authenticated employee/attendee, only return their company's events
+        else if (User.Identity != null && User.Identity.IsAuthenticated)
+        {
+            bool isSuperAdmin = User.IsInRole("SuperAdmin");
+            var userCompanyClaim = User.FindFirst("CompanyId")?.Value;
+
+            if (!isSuperAdmin && int.TryParse(userCompanyClaim, out int userCompanyId) && userCompanyId > 0)
+            {
+                query = query.Where(e => e.IdCompany == userCompanyId);
+            }
+        }
+
+        var events = await query
+            .OrderByDescending(e => e.Date)
             .Select(e => new EventResponseDto(
                 e.IdEvent,
                 e.IdCompany,
-                e.Company != null ? e.Company.Name : "Independent Session", // ✅ FIX: Null-safe company name
+                e.Company != null ? e.Company.Name : "Independent Session",
                 e.Title,
                 e.Description,
                 e.Address,
@@ -62,10 +82,25 @@ public class EventController : ControllerBase
 
         if (e == null) return NotFound();
 
+        // Company Isolation check on single event
+        if (User.Identity != null && User.Identity.IsAuthenticated)
+        {
+            bool isSuperAdmin = User.IsInRole("SuperAdmin");
+            var userCompanyClaim = User.FindFirst("CompanyId")?.Value;
+
+            if (!isSuperAdmin && int.TryParse(userCompanyClaim, out int userCompanyId) && userCompanyId > 0)
+            {
+                if (e.IdCompany != userCompanyId)
+                {
+                    return Forbid(); // User does not belong to the hosting company
+                }
+            }
+        }
+
         return Ok(new EventResponseDto(
             e.IdEvent,
             e.IdCompany,
-            e.Company != null ? e.Company.Name : "Independent Session", // ✅ FIX: Null-safe company name
+            e.Company != null ? e.Company.Name : "Independent Session",
             e.Title,
             e.Description,
             e.Address,
@@ -108,7 +143,6 @@ public class EventController : ControllerBase
             Person = dto.Person,
             Capacity = dto.Capacity > 0 ? dto.Capacity : 100,
             Status = "Scheduled"
-            
         };
 
         _context.Events.Add(newEvent);
@@ -238,13 +272,11 @@ public class EventController : ControllerBase
 
         if (evt == null) return NotFound("Event not found.");
 
-        // 1. Manually remove feedbacks to break the dual-cascade conflict
         if (evt.Feedbacks.Any())
         {
             _context.Feedbacks.RemoveRange(evt.Feedbacks);
         }
 
-        // 2. Manually remove invitations tied to event participations
         var invitations = evt.Participations
             .Where(p => p.Invitation != null)
             .Select(p => p.Invitation!);
@@ -254,7 +286,6 @@ public class EventController : ControllerBase
             _context.Invitations.RemoveRange(invitations);
         }
 
-        // 3. Delete event (EF Core handles Participations)
         _context.Events.Remove(evt);
         await _context.SaveChangesAsync();
 

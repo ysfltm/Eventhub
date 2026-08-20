@@ -11,7 +11,6 @@ namespace EventHub.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-// ✅ FIX 1: Expanded Class-Level Authorize attribute to include all 8 roles
 [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
 public class ParticipationController : ControllerBase
 {
@@ -36,7 +35,7 @@ public class ParticipationController : ControllerBase
     }
 
     // 1. GET: api/Participation/event/1
-    [HttpGet("event/{eventId}")]
+    [HttpGet("event/{eventId:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin,Staff,Sponsor,Attendee,VIP,Spokesperson,Speaker")]
     public async Task<ActionResult<IEnumerable<ParticipationResponseDto>>> GetParticipationsByEvent(int eventId)
     {
@@ -64,10 +63,9 @@ public class ParticipationController : ControllerBase
 
     // 2. POST: api/Participation
     [HttpPost]
-    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 2: Removed leading space before Attendee
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<ActionResult<ParticipationResponseDto>> AssignParticipant(CreateParticipationDto dto)
     {
-        // ✅ FIX 3: Enforce self-registration for non-Organiser users to prevent impersonation
         int targetPersonId = dto.IdPerson;
         bool isOrganiserOrAdmin = User.IsInRole("EventOrganiser") || User.IsInRole("SuperAdmin");
 
@@ -86,14 +84,13 @@ public class ParticipationController : ControllerBase
 
         var evt = await _context.Events.FindAsync(dto.IdEvent);
         if (evt == null) return BadRequest("Event does not exist.");
-        // ✅ CHECK 1: Ensure event hasn't already passed
+
         var eventStartDateTime = evt.Date.Date + evt.StartTime;
         if (DateTime.UtcNow >= eventStartDateTime)
         {
             return BadRequest("Cannot register for this event as registration is closed or the event has already passed.");
         }
 
-        // ✅ CHECK 2: Ensure capacity isn't reached
         int currentRegistrations = await _context.Participations.CountAsync(pt => pt.IdEvent == dto.IdEvent);
         if (evt.Capacity > 0 && currentRegistrations >= evt.Capacity)
         {
@@ -103,7 +100,6 @@ public class ParticipationController : ControllerBase
         var person = await _context.People.FindAsync(targetPersonId);
         if (person == null) return BadRequest("Person does not exist.");
 
-        // Prevent duplicate registration for the same event
         var exists = await _context.Participations
             .AnyAsync(pt => pt.IdEvent == dto.IdEvent && pt.IdPerson == targetPersonId);
 
@@ -112,26 +108,32 @@ public class ParticipationController : ControllerBase
             return BadRequest("This person is already registered for this event.");
         }
 
+        // Default status is "Pending" for confirmation workflow
+        string initialStatus = !string.IsNullOrWhiteSpace(dto.Status) ? dto.Status : "Pending";
+
         var participation = new Participation
         {
             IdEvent = dto.IdEvent,
             IdPerson = targetPersonId,
             Type = string.IsNullOrWhiteSpace(dto.Type) ? "Attendee" : dto.Type,
-            Status = "Invited",
+            Status = initialStatus,
             InvitationDate = DateTime.UtcNow
         };
 
         _context.Participations.Add(participation);
         await _context.SaveChangesAsync();
 
-        // Automatically generate pass + program and dispatch email/WhatsApp to participant
-        try
+        // If created directly as Confirmed, generate and send pass
+        if (initialStatus.Equals("Confirmed", StringComparison.OrdinalIgnoreCase))
         {
-            await ProcessAndSendPassAsync(participation.IdParticipation);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Warning] Failed to auto-send pass email/WhatsApp: {ex.Message}");
+            try
+            {
+                await ProcessAndSendPassAsync(participation.IdParticipation);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Warning] Failed to auto-send pass email/WhatsApp: {ex.Message}");
+            }
         }
 
         var response = new ParticipationResponseDto(
@@ -151,12 +153,54 @@ public class ParticipationController : ControllerBase
         return Ok(response);
     }
 
-    // 3. GET: api/Participation/my-passes
+    // 3. PATCH: api/Participation/5/status (Attendance Confirmation / RSVP)
+    [HttpPatch("{id:int}/status")]
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
+    public async Task<IActionResult> UpdateAttendanceStatus(int id, [FromBody] UpdateParticipationStatusDto dto)
+    {
+        var pt = await _context.Participations
+            .Include(p => p.Event)
+            .Include(p => p.Person)
+            .Include(p => p.Invitation)
+            .FirstOrDefaultAsync(p => p.IdParticipation == id);
+
+        if (pt == null) return NotFound("Participation record not found.");
+
+        var validStatuses = new[] { "Pending", "Confirmed", "Cancelled", "CheckedIn" };
+        if (!validStatuses.Contains(dto.Status, StringComparer.OrdinalIgnoreCase))
+        {
+            return BadRequest("Invalid status. Allowed values: Pending, Confirmed, Cancelled, CheckedIn.");
+        }
+
+        pt.Status = dto.Status;
+
+        // If status changed to Confirmed, automatically generate and dispatch the access pass
+        if (dto.Status.Equals("Confirmed", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                await ProcessAndSendPassAsync(pt.IdParticipation);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Warning] Failed to generate/send pass on confirmation: {ex.Message}");
+            }
+        }
+
+        await _context.SaveChangesAsync();
+
+        return Ok(new { 
+            message = $"Attendance status updated to '{pt.Status}'.",
+            status = pt.Status,
+            participationId = pt.IdParticipation
+        });
+    }
+
+    // 4. GET: api/Participation/my-passes
     [HttpGet("my-passes")]
-    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 4: Removed leading space before Attendee
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> GetMyPasses()
     {
-        // 1. Extract IdPerson securely from JWT Claims
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                           ?? User.FindFirst("sub")?.Value
                           ?? User.FindFirst("nameid")?.Value;
@@ -166,7 +210,6 @@ public class ParticipationController : ControllerBase
             return Unauthorized(new { message = "Invalid token or user identity." });
         }
 
-        // 2. Fetch all participation passes for the current user with Event & Company details
         var myPasses = await _context.Participations
             .Include(p => p.Event)
                 .ThenInclude(e => e.Company)
@@ -212,15 +255,14 @@ public class ParticipationController : ControllerBase
         return Ok(myPasses);
     }
 
-    // 4. PUT: api/Participation/5
-    [HttpPut("{id}")]
+    // 5. PUT: api/Participation/5
+    [HttpPut("{id:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> UpdateParticipation(int id, [FromBody] CreateParticipationDto dto)
     {
         var pt = await _context.Participations.FindAsync(id);
         if (pt == null) return NotFound("Participation record not found.");
 
-        // Validate foreign keys
         var eventExists = await _context.Events.AnyAsync(e => e.IdEvent == dto.IdEvent);
         var personExists = await _context.People.AnyAsync(p => p.IdPerson == dto.IdPerson);
 
@@ -236,12 +278,12 @@ public class ParticipationController : ControllerBase
         return NoContent();
     }
 
-    // DELETE: api/Participation/cancel/1
+    // 6. DELETE: api/Participation/cancel/1
     [HttpDelete("cancel/{eventId:int}")]
     [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> CancelMyRegistration(int eventId)
     {
-        var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value 
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value 
                           ?? User.FindFirst("sub")?.Value
                           ?? User.FindFirst("nameid")?.Value
                           ?? User.FindFirst("id")?.Value;
@@ -253,10 +295,9 @@ public class ParticipationController : ControllerBase
 
         bool isAdmin = User.IsInRole("SuperAdmin") || User.IsInRole("EventOrganiser");
 
-        // ✅ FIX 1: Allow Admins/Organisers to cancel any pass for the event
         var participation = await _context.Participations
             .Include(p => p.Event)
-            .Include(p => p.Invitation) // ✅ Include Invitation
+            .Include(p => p.Invitation)
             .FirstOrDefaultAsync(p => p.IdEvent == eventId && (p.IdPerson == currentPersonId || isAdmin));
 
         if (participation == null)
@@ -269,7 +310,6 @@ public class ParticipationController : ControllerBase
             return BadRequest(new { message = "Cannot cancel registration after you have already checked in." });
         }
 
-        // ✅ FIX 2: Delete QR Invitation first to prevent SQL Foreign Key Exception
         if (participation.Invitation != null)
         {
             _context.Invitations.Remove(participation.Invitation);
@@ -284,7 +324,7 @@ public class ParticipationController : ControllerBase
         });
     }
 
-    // DELETE: api/Participation/5
+    // 7. DELETE: api/Participation/5
     [HttpDelete("{id:int}")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> DeleteParticipation(int id)
@@ -295,7 +335,6 @@ public class ParticipationController : ControllerBase
 
         if (pt == null) return NotFound("Participation record not found.");
 
-        // ✅ FIX 3: Delete QR Invitation first to prevent SQL Foreign Key Exception
         if (pt.Invitation != null)
         {
             _context.Invitations.Remove(pt.Invitation);
@@ -307,10 +346,9 @@ public class ParticipationController : ControllerBase
         return Ok(new { message = $"Participation record {id} deleted successfully." });
     }
 
-
-    // 7. POST: api/Participation/check-in
+    // 8. POST: api/Participation/check-in
     [HttpPost("check-in")]
-    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")] // ✅ FIX 6: Removed leading space before Attendee
+    [Authorize(Roles = "Attendee,VIP,Spokesperson,Speaker,Sponsor,Staff,EventOrganiser,SuperAdmin")]
     public async Task<ActionResult<CheckInResponseDto>> CheckInParticipant([FromBody] CheckInRequestDto dto)
     {
         if (string.IsNullOrWhiteSpace(dto.QrPayload))
@@ -324,7 +362,6 @@ public class ParticipationController : ControllerBase
             ));
         }
 
-        // 1. Locate the Invitation by QR Code payload
         var invitation = await _context.Invitations
             .Include(i => i.Participation)
                 .ThenInclude(p => p.Person)
@@ -345,7 +382,6 @@ public class ParticipationController : ControllerBase
 
         var pt = invitation.Participation;
 
-        // 2. Ensure pass matches the intended event
         if (pt.IdEvent != dto.EventId)
         {
             return BadRequest(new CheckInResponseDto(
@@ -357,7 +393,6 @@ public class ParticipationController : ControllerBase
             ));
         }
 
-        // 3. Check for duplicate scan / already checked in
         if (pt.CheckInTime != null)
         {
             return Conflict(new CheckInResponseDto(
@@ -369,7 +404,6 @@ public class ParticipationController : ControllerBase
             ));
         }
 
-        // 4. Record check-in timestamp and update status
         pt.CheckInTime = DateTime.UtcNow;
         pt.Status = "CheckedIn";
 
@@ -384,7 +418,7 @@ public class ParticipationController : ControllerBase
         ));
     }
 
-    // 8. POST: api/Participation/5/send-invitation
+    // 9. POST: api/Participation/5/send-invitation
     [HttpPost("{participationId:int}/send-invitation")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendInvitation(int participationId)
@@ -408,7 +442,7 @@ public class ParticipationController : ControllerBase
         return Ok(new { message = "WhatsApp invitation template sent successfully. Awaiting participant reply." });
     }
 
-    // 9. POST: api/Participation/event/1/send-all-invitations
+    // 10. POST: api/Participation/event/1/send-all-invitations
     [HttpPost("event/{eventId:int}/send-all-invitations")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendAllInvitations(int eventId)
@@ -424,7 +458,6 @@ public class ParticipationController : ControllerBase
             return NotFound(new { message = "No valid participants with phone numbers found for this event." });
         }
 
-        // Run all WhatsApp invitations concurrently in parallel
         var tasks = participations.Select(pt => _whatsAppService.SendInvitationWhatsAppAsync(
             toPhoneNumber: pt.Person.Phone,
             attendeeName: $"{pt.Person.FirstName} {pt.Person.LastName}",
@@ -438,7 +471,7 @@ public class ParticipationController : ControllerBase
         });
     }
 
-    // 10. POST: api/Participation/5/send-pass
+    // 11. POST: api/Participation/5/send-pass
     [HttpPost("{participationId:int}/send-pass")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendPassEmail(int participationId)
@@ -456,7 +489,7 @@ public class ParticipationController : ControllerBase
         });
     }
 
-    // 11. POST: api/Participation/event/1/send-all-passes
+    // 12. POST: api/Participation/event/1/send-all-passes
     [HttpPost("event/{eventId:int}/send-all-passes")]
     [Authorize(Roles = "EventOrganiser,SuperAdmin")]
     public async Task<IActionResult> SendAllPasses(int eventId)
@@ -473,7 +506,6 @@ public class ParticipationController : ControllerBase
 
         int successCount = 0;
 
-        // Process sequentially to keep DbContext thread-safe
         foreach (var id in participationIds)
         {
             try
@@ -492,7 +524,7 @@ public class ParticipationController : ControllerBase
         });
     }
 
-    // 12. Helper method: ProcessAndSendPassAsync
+    // 13. Helper method: ProcessAndSendPassAsync
     private async Task<string?> ProcessAndSendPassAsync(int participationId)
     {
         var pt = await _context.Participations
@@ -504,11 +536,9 @@ public class ParticipationController : ControllerBase
 
         if (pt == null) return null;
 
-        // 1. Generate or reuse unique QR payload
         string qrPayload = pt.Invitation?.QRCode ?? $"EVENTHUB-{pt.IdEvent}-{pt.IdPerson}-{Guid.NewGuid():N}";
         string wwwroot = _env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
 
-        // 2. Generate Access Pass PDF via QuestPDF service
         string relativePassPath = _pdfService.GenerateInvitationPdf(
             participationId: pt.IdParticipation,
             eventTitle: pt.Event.Title,
@@ -522,7 +552,6 @@ public class ParticipationController : ControllerBase
         );
         string physicalPassPath = Path.Combine(wwwroot, relativePassPath.TrimStart('/'));
 
-        // 3. Generate Event Program PDF via QuestPDF service
         string relativeProgramPath = _pdfService.GenerateEventProgramPdf(
             eventId: pt.Event.IdEvent,
             eventTitle: pt.Event.Title,
@@ -536,7 +565,6 @@ public class ParticipationController : ControllerBase
         );
         string physicalProgramPath = Path.Combine(wwwroot, relativeProgramPath.TrimStart('/'));
 
-        // 4. Track Invitation record in Database
         if (pt.Invitation == null)
         {
             pt.Invitation = new Invitation
@@ -553,7 +581,6 @@ public class ParticipationController : ControllerBase
             pt.Invitation.PDFPath = relativePassPath;
         }
 
-        // 5. Build Attachments Collection for Email
         string safeTitle = pt.Event.Title.Replace(" ", "_");
         var attachments = new List<EmailAttachmentDto>
         {
@@ -561,11 +588,9 @@ public class ParticipationController : ControllerBase
             new EmailAttachmentDto(physicalProgramPath, $"Program_{safeTitle}.pdf")
         };
 
-        // Safely format date & time strings before string interpolation
         string formattedDate = pt.Event.Date.ToString("MMMM dd, yyyy");
         string formattedTime = DateTime.Today.Add(pt.Event.StartTime).ToString("hh:mm tt");
 
-        // 6. Build Email HTML Body
         string htmlBody = $@"
             <div style='font-family: Arial, sans-serif; color: #333; max-width: 600px; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;'>
                 <h2 style='color: #1a56db; margin-top: 0;'>🎟️ Your Event Pass & Official Program</h2>
@@ -585,7 +610,6 @@ public class ParticipationController : ControllerBase
                 <p>See you there!<br/><strong>The EventHub Team</strong></p>
             </div>";
 
-        // 7. Dispatch Email with both PDF attachments via MailKit/Gmail
         await _emailService.SendEmailWithAttachmentsAsync(
             toEmail: pt.Person.Email,
             subject: $"🎟️ Access Pass & Program: {pt.Event.Title}",
@@ -593,17 +617,14 @@ public class ParticipationController : ControllerBase
             attachments: attachments
         );
 
-        // Update DB Email Status
         pt.Invitation.SentEmail = true;
         pt.Invitation.EmailSentDate = DateTime.UtcNow;
 
-        // 8. Dispatch WhatsApp Automated Message (if phone number is present)
         if (!string.IsNullOrWhiteSpace(pt.Person.Phone))
         {
             try
             {
                 string publicBaseUrl = "https://grandkid-copy-catering.ngrok-free.dev";
-                
                 string fullPassPdfUrl = $"{publicBaseUrl}{relativePassPath}";
                 string fullProgramPdfUrl = $"{publicBaseUrl}{relativeProgramPath}";
 
@@ -613,7 +634,6 @@ public class ParticipationController : ControllerBase
 
                 string programCaption = $"📖 *Official Event Program: {pt.Event.Title}*";
 
-                // Send Pass PDF
                 bool passSent = await _whatsAppService.SendPassPdfWhatsAppAsync(
                     toPhoneNumber: pt.Person.Phone,
                     pdfPublicUrl: fullPassPdfUrl,
@@ -621,7 +641,6 @@ public class ParticipationController : ControllerBase
                     caption: passCaption
                 );
 
-                // Send Program PDF
                 bool programSent = await _whatsAppService.SendPassPdfWhatsAppAsync(
                     toPhoneNumber: pt.Person.Phone,
                     pdfPublicUrl: fullProgramPdfUrl,

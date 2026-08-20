@@ -138,7 +138,10 @@ app.Use(async (context, next) =>
 // Enables serving uploaded/generated files (e.g. PDFs, QR passes) from wwwroot/
 app.UseStaticFiles();
 
-app.UseCors("AllowAll");
+app.UseCors(policy => policy
+    .AllowAnyOrigin()
+    .AllowAnyMethod()
+    .AllowAnyHeader());
 
 // IMPORTANT: Authentication MUST be called BEFORE Authorization
 app.UseAuthentication();

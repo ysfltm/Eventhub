@@ -51,6 +51,10 @@ public class AppDbContext : DbContext
 
             entity.Property(p => p.Email).IsRequired().HasMaxLength(150);
             entity.Property(p => p.IsAccountActivated).HasDefaultValue(false);
+            entity.HasOne(p => p.Company)
+                .WithMany(c => c.Persons)
+                .HasForeignKey(p => p.IdCompany)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<Participation>(entity =>

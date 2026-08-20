@@ -23,10 +23,11 @@ public record RegisterPersonDto(
         ErrorMessage = "Password must contain at least 1 uppercase letter, 1 lowercase letter, 1 number, and 1 special symbol."
     )]
     string Password,
-
+    int? IdCompany,
     string? Address,
     string? CompanyName,
     string? Position,
+    string? LinkedInUrl,
 
     [Required(ErrorMessage = "Role is required.")]
     PersonRole Role = PersonRole.Attendee
@@ -47,5 +48,7 @@ public record AuthResponseDto(
     string Email,
     string Role,
     string FirstName,
+    string? LinkedInUrl,
+    int? IdCompany,
     string LastName
 );
